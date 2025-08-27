@@ -4,143 +4,161 @@
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
-\texit;
+	exit;
 }
 
 class Bosseo_Accelerator_Plugin {
-\t/** @var Bosseo_Accelerator_Settings */
-\tprivate $settings;
+	/** @var Bosseo_Accelerator_Settings */
+	private $settings;
 
-\t/** @var Bosseo_Accelerator_Scripts */
-\tprivate $scripts;
+	/** @var Bosseo_Accelerator_Scripts */
+	private $scripts;
 
-\t/** @var Bosseo_Accelerator_Styles */
-\tprivate $styles;
+	/** @var Bosseo_Accelerator_Styles */
+	private $styles;
 
-\t/** @var Bosseo_Accelerator_HTML_Optimizer */
-\tprivate $html_optimizer;
+	/** @var Bosseo_Accelerator_HTML_Optimizer */
+	private $html_optimizer;
 
-\t/** @var bool */
-\tprivate $skip = false;
+	/** @var bool */
+	private $skip = false;
 
-\tpublic function __construct( $settings, $scripts, $styles, $html_optimizer ) {
-\t\t$this->settings = $settings;
-\t\t$this->scripts = $scripts;
-\t\t$this->styles = $styles;
-\t\t$this->html_optimizer = $html_optimizer;
-\t}
+	public function __construct( $settings, $scripts, $styles, $html_optimizer ) {
+		$this->settings = $settings;
+		$this->scripts = $scripts;
+		$this->styles = $styles;
+		$this->html_optimizer = $html_optimizer;
+	}
 
-\tpublic function init() {
-\t\t$this->settings->init();
+	public function init() {
+		$this->settings->init();
 
-\t\tadd_action( 'init', [ $this, 'determine_skip' ], 1 );
-\t\tadd_action( 'template_redirect', [ $this, 'maybe_start_buffer' ], 0 );
-\t\tadd_action( 'wp_enqueue_scripts', [ $this, 'enqueue_assets' ], 100 );
+		add_action( 'init', [ $this, 'maybe_suppress_notices' ], 0 );
+		add_action( 'init', [ $this, 'determine_skip' ], 1 );
+		add_action( 'template_redirect', [ $this, 'maybe_start_buffer' ], 0 );
+		add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_assets' ], 100 );
 
-\t\t// Filters for scripts and styles.
-\t\tadd_filter( 'script_loader_tag', [ $this->scripts, 'filter_script_tag' ], 20, 3 );
-\t\tadd_filter( 'style_loader_tag', [ $this->styles, 'filter_style_tag' ], 20, 4 );
+		// Filters for scripts and styles.
+		add_filter( 'script_loader_tag', [ $this->scripts, 'filter_script_tag' ], 20, 3 );
+		add_filter( 'style_loader_tag', [ $this->styles, 'filter_style_tag' ], 20, 4 );
 
-\t\t// Critical CSS injection.
-\t\tadd_action( 'wp_head', [ $this->styles, 'output_critical_css' ], 1 );
-\t}
+		// Critical CSS injection.
+		add_action( 'wp_head', [ $this->styles, 'output_critical_css' ], 1 );
+	}
 
-\tpublic function determine_skip() {
-\t\t$options = $this->settings->get_options();
+	public function maybe_suppress_notices() {
+		$options = $this->settings->get_options();
+		if ( empty( $options['suppress_notices'] ) ) {
+			return;
+		}
+		// Frontend-only: suppress PHP notices/warnings for environments like Playground.
+		if ( is_admin() ) { return; }
+		if ( defined( 'DOING_AJAX' ) && DOING_AJAX ) { return; }
+		if ( defined( 'REST_REQUEST' ) && REST_REQUEST ) { return; }
+		if ( function_exists( 'wp_is_json_request' ) && wp_is_json_request() ) { return; }
+		if ( is_feed() ) { return; }
+		@ini_set( 'display_errors', '0' );
+		$level = E_ALL;
+		$level = $level & ~E_NOTICE & ~E_WARNING & ~E_DEPRECATED & ~E_STRICT & ~E_USER_NOTICE & ~E_USER_WARNING & ~E_USER_DEPRECATED;
+		error_reporting( $level );
+	}
 
-\t\t// Global kill switch.
-\t\tif ( empty( $options['enabled'] ) ) {
-\t\t\t$this->skip = true;
-\t\t\treturn;
-\t\t}
+	public function determine_skip() {
+		$options = $this->settings->get_options();
 
-\t\t// Skip in admin, AJAX, REST, feeds, previews, Elementor editor.
-\t\tif ( is_admin() || ( defined( 'DOING_AJAX' ) && DOING_AJAX ) ) {
-\t\t\t$this->skip = true;
-\t\t\treturn;
-\t\t}
+		// Global kill switch.
+		if ( empty( $options['enabled'] ) ) {
+			$this->skip = true;
+			return;
+		}
 
-\t\tif ( ( defined( 'REST_REQUEST' ) && REST_REQUEST ) || ( function_exists( 'wp_is_json_request' ) && wp_is_json_request() ) ) {
-\t\t\t$this->skip = true;
-\t\t\treturn;
-\t\t}
+		// Skip in admin, AJAX, REST, feeds, previews, Elementor editor.
+		if ( is_admin() || ( defined( 'DOING_AJAX' ) && DOING_AJAX ) ) {
+			$this->skip = true;
+			return;
+		}
 
-\t\tif ( is_feed() ) {
-\t\t\t$this->skip = true;
-\t\t\treturn;
-\t\t}
+		if ( ( defined( 'REST_REQUEST' ) && REST_REQUEST ) || ( function_exists( 'wp_is_json_request' ) && wp_is_json_request() ) ) {
+			$this->skip = true;
+			return;
+		}
 
-\t\t// Elementor editor detection.
-\t\tif ( isset( $_GET['elementor-preview'] ) || isset( $_GET['elementor_library'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-\t\t\t$this->skip = true;
-\t\t\treturn;
-\t\t}
+		if ( is_feed() ) {
+			$this->skip = true;
+			return;
+		}
 
-\t\t// Optimize for logged-in users?
-\t\tif ( is_user_logged_in() && empty( $options['optimize_logged_in'] ) ) {
-\t\t\t$this->skip = true;
-\t\t\treturn;
-\t\t}
+		// Elementor editor detection.
+		if ( isset( $_GET['elementor-preview'] ) || isset( $_GET['elementor_library'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$this->skip = true;
+			return;
+		}
 
-\t\t// Per-page exclude by ID.
-\t\tif ( is_singular() ) {
-\t\t\t$excluded = $this->settings->parse_id_list( $options['excluded_ids'] ?? '' );
-\t\t\t$qo_id = get_queried_object_id();
-\t\t\tif ( $qo_id && in_array( (int) $qo_id, $excluded, true ) ) {
-\t\t\t\t$this->skip = true;
-\t\t\t\treturn;
-\t\t\t}
-\t\t}
-\t}
+		// Optimize for logged-in users?
+		if ( is_user_logged_in() && empty( $options['optimize_logged_in'] ) ) {
+			$this->skip = true;
+			return;
+		}
 
-\tpublic function maybe_start_buffer() {
-\t\tif ( $this->skip ) {
-\t\t\treturn;
-\t\t}
+		// Per-page exclude by ID.
+		if ( is_singular() ) {
+			$excluded = $this->settings->parse_id_list( $options['excluded_ids'] ?? '' );
+			$qo_id = get_queried_object_id();
+			if ( $qo_id && in_array( (int) $qo_id, $excluded, true ) ) {
+				$this->skip = true;
+				return;
+			}
+		}
+	}
 
-\t\t// Start output buffering to optimize HTML only when DOM is available.
-\t\tob_start( [ $this, 'optimize_html' ] );
-\t}
+	public function maybe_start_buffer() {
+		if ( $this->skip ) {
+			return;
+		}
 
-\tpublic function optimize_html( $html ) {
-\t\t$options = $this->settings->get_options();
+		// Start output buffering to optimize HTML only when DOM is available.
+		ob_start( [ $this, 'optimize_html' ] );
+	}
 
-\t\tif ( empty( $html ) || ! is_string( $html ) ) {
-\t\t\treturn $html;
-\t\t}
+	public function optimize_html( $html ) {
+		$options = $this->settings->get_options();
 
-\t\t// Skip feeds, JSON, admin-ajax responses, etc. Double check content type.
-\t\t$ct = function_exists( 'is_feed' ) ? is_feed() : false;
-\t\tif ( $ct ) {
-\t\t\treturn $html;
-\t\t}
+		if ( empty( $html ) || ! is_string( $html ) ) {
+			return $html;
+		}
 
-\t\treturn $this->html_optimizer->process_html( $html, $options );
-\t}
+		// Skip feeds, JSON, admin-ajax responses, etc. Double check content type.
+		$ct = function_exists( 'is_feed' ) ? is_feed() : false;
+		if ( $ct ) {
+			return $html;
+		}
 
-\tpublic function enqueue_assets() {
-\t\tif ( $this->skip ) {
-\t\t\treturn;
-\t\t}
+		return $this->html_optimizer->process_html( $html, $options );
+	}
 
-\t\t// Front-end bootstrap script for hydration and delayed third-party loading.
-\t\twp_register_script(
-\t\t\t'bacc-bootstrap',
-\t\t\tBOSSEO_ACCELERATOR_URL . 'assets/js/bootstrap.js',
-\t\t\t[],
-\t\t\tBOSSEO_ACCELERATOR_VERSION,
-\t\t\ttrue
-\t\t);
+	public function enqueue_assets() {
+		if ( $this->skip ) {
+			return;
+		}
 
-\t\t$cfg = [
-\t\t\t'delay_third_party' => (bool) ( $this->settings->get_options()['delay_third_party'] ?? 1 ),
-\t\t\t'diag' => [ 'enabled' => true, 'suppress' => (bool) ( $this->settings->get_options()['suppress_notices'] ?? 0 ) ],
-\t\t\t'patterns' => $this->settings->get_patterns_list(),
-\t\t\t'hero_mode' => $this->settings->get_options()['hero_mode'] ?? 'smart',
-\t\t];
+		// Front-end bootstrap script for hydration and delayed third-party loading.
+		wp_register_script(
+			'bacc-bootstrap',
+			BOSSEO_ACCELERATOR_URL . 'assets/js/bootstrap.js',
+			[],
+			BOSSEO_ACCELERATOR_VERSION,
+			true
+		);
 
-\t\twp_localize_script( 'bacc-bootstrap', 'BACC_BOOT', $cfg );
-\t\twp_enqueue_script( 'bacc-bootstrap' );
-\t}
+		$cfg = [
+			'delay_third_party' => (bool) ( $this->settings->get_options()['delay_third_party'] ?? 1 ),
+			'diag' => [ 'enabled' => true, 'suppress' => (bool) ( $this->settings->get_options()['suppress_notices'] ?? 0 ) ],
+			'patterns' => $this->settings->get_patterns_list(),
+			'hero_mode' => $this->settings->get_options()['hero_mode'] ?? 'smart',
+		];
+
+		wp_localize_script( 'bacc-bootstrap', 'BACC_BOOT', $cfg );
+		wp_enqueue_script( 'bacc-bootstrap' );
+	}
 }
 
